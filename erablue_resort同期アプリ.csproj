@@ -11,7 +11,7 @@
     <SelfContained>false</SelfContained>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
 
-    <Version>1.0.0</Version>
+    <Version>1.0.1</Version>
     <Product>erablue_resort 同期アプリ</Product>
     <Authors>青っぽい猫 (BluishCat)</Authors>
     <Copyright>Copyright (c) 2026 青っぽい猫 (BluishCat)</Copyright>

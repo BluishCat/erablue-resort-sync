@@ -517,6 +517,8 @@ class MainForm : Form
         bool hardLink = _settings.HardLinkResources;
         string trashRoot = TrashRoot;
         var result = await Task.Run(() => FolderSync.Execute(plan, targetRoot, hardLink, trashRoot, progress, Log));
+        // 同期で exe が入った・名前が変わったときに、起動するゲームの一覧を今の指定先に合わせる
+        RefreshGameList();
 
         var summary = $"同期しました（コピー {result.Copied} 件"
             + (result.Linked > 0 ? $" / ハードリンク {result.Linked} 件" : "")
