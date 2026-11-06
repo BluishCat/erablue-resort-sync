@@ -3,6 +3,8 @@
 era バリアント「[erablue_resort](https://github.com/erablue-resort/erablue_resort)」の
 **本体更新 → 追加画像（顔グラ）取得 → ゲームフォルダへの同期** をボタン一つで行う Windows 用 GUI アプリです。
 
+![メイン画面](docs/images/main.png)
+
 > [!NOTE]
 > 非公式ツールです。erablue_resort の開発チームとは関係ありません。
 > 不具合や要望はこのリポジトリの Issues へお願いします（本体側には問い合わせないでください）。
