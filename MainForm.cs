@@ -17,6 +17,7 @@ class MainForm : Form
     private string SourceRoot => _settings.BodyPath(AppDirectory);
     private string ResourcesSource => _settings.ResourcesPath(AppDirectory);
     private string WorkDir => _settings.WorkPath(AppDirectory);
+    private string BodyResources => Path.Combine(SourceRoot, "resources");
     private string TrashRoot => Path.Combine(WorkDir, "削除済み");
     private string LogPath => Path.Combine(WorkDir, "同期アプリ_ログ.txt");
     private readonly Label _sourceLabel = new() { AutoSize = true, Anchor = AnchorStyles.Left };
@@ -287,6 +288,99 @@ class MainForm : Form
                 "ハードリンク", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
             if (answer == DialogResult.Yes) await RunWithLock("ハードリンクへのつなぎ直し", Relink);
         }
+
+        if (dialog.Action == ConfigDialog.ExtraAction.BaseDownload) await RunWithLock("全まとめの取り込み", BaseManual);
+        else if (dialog.Action == ConfigDialog.ExtraAction.ImportZip) await RunWithLock("zip の取り込み", ImportLocalZip);
+    }
+
+    /// <summary>
+    /// 全まとめ（ギガファイル便）の確認。追加画像がほとんど無く、まだ取り込んでいなければ取り込む。
+    /// そうでなければ、新しい全まとめが出たことを一度だけ知らせる
+    /// </summary>
+    private async Task BaseAuto()
+    {
+        var link = await BaseImport.FindLink(Log);
+        if (link == null) return;
+        List<BasePackPart> parts;
+        try
+        {
+            (_, parts) = await BaseImport.ListParts(link);
+        }
+        catch (Exception ex)
+        {
+            Log("全まとめの中身を確認できませんでした: " + ex.Message);
+            return;
+        }
+        var state = ImageState.Load(ImageStatePath, ResourcesSource);
+        var todo = parts.Where(p => !state.BaseParts.Contains(p.Key)).ToList();
+        if (todo.Count == 0) return;
+
+        int images = await Task.Run(() => BaseImport.CountImages(ResourcesSource, BaseImport.NewUserThreshold));
+        if (state.BaseParts.Count == 0 && images < BaseImport.NewUserThreshold)
+        {
+            Log($"追加画像がまだほとんど無いので、全まとめ「{link.Label}」（{todo.Sum(p => p.CompressedSize) / 1e9:0.00} GB）を取り込みます");
+            var result = await BaseImport.DownloadAndImport(link, todo, state, ImageStatePath, BodyResources, WorkDir, Log, DownloadProgress());
+            Log("全まとめの取り込みが完了しました（" + result.Summary + "）");
+            return;
+        }
+        if (state.BaseNotified == link.FileId) return;
+        Log($"新しい全まとめ「{link.Label}」が出ています（中身の変わった zip {todo.Count} 個 / {todo.Sum(p => p.CompressedSize) / 1e9:0.00} GB）。"
+            + "毎回 Dropbox から取り込んでいれば不要です。抜けている画像があるときは「詳細設定」の「全まとめを取り込む」で取り込めます");
+        state.BaseNotified = link.FileId;
+        state.Save(ImageStatePath);
+    }
+
+    // 詳細設定の「全まとめを取り込む」
+    private async Task BaseManual()
+    {
+        var link = await BaseImport.FindLink(Log) ?? throw new InvalidOperationException("Wiki に全まとめのリンクが見つかりませんでした。ギガファイル便から自分でダウンロードし、「手元の zip を取り込む」を使ってください。");
+        var (_, parts) = await BaseImport.ListParts(link);
+        var state = ImageState.Load(ImageStatePath, ResourcesSource);
+        var todo = parts.Where(p => !state.BaseParts.Contains(p.Key)).ToList();
+        string question;
+        if (todo.Count == 0)
+        {
+            todo = parts;
+            question = $"全まとめ「{link.Label}」はすべて取り込み済みです。\n\nもう一度すべて取り込みますか？（{todo.Sum(p => p.CompressedSize) / 1e9:0.00} GB をダウンロードします）";
+        }
+        else
+        {
+            question = $"全まとめ「{link.Label}」のうち、まだ取り込んでいない zip {todo.Count} 個（{todo.Sum(p => p.CompressedSize) / 1e9:0.00} GB）をダウンロードして取り込みます。\n\n"
+                + string.Join("\n", todo.Select(p => $"・{p.Name}（{p.CompressedSize / 1e6:#,0} MB）")) + "\n\nよろしいですか？";
+        }
+        question += "\n\n手元の方が新しい画像と、本体にある画像は上書きしません。";
+        if (MessageBox.Show(this, question, "全まとめの取り込み", MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK)
+        {
+            Log("全まとめの取り込みをやめました");
+            return;
+        }
+        var result = await BaseImport.DownloadAndImport(link, todo, state, ImageStatePath, BodyResources, WorkDir, Log, DownloadProgress());
+        Log("全まとめの取り込みが完了しました（" + result.Summary + "）。「同期」でゲームに反映されます");
+    }
+
+    // 詳細設定の「手元の zip を取り込む」。全まとめ（中に zip が入ったもの）も、普通の画像 zip も取り込める
+    private async Task ImportLocalZip()
+    {
+        using var dialog = new OpenFileDialog
+        {
+            Title = "取り込む画像の zip を選んでください（全まとめの resources.zip、Dropbox のまとめなど）",
+            Filter = "zip ファイル (*.zip)|*.zip",
+            Multiselect = true,
+        };
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        var state = ImageState.Load(ImageStatePath, ResourcesSource);
+        string body = BodyResources, work = WorkDir;
+        foreach (string path in dialog.FileNames)
+        {
+            Log($"取り込み中: {path}（{new FileInfo(path).Length / 1e6:#,0} MB）");
+            var progress = DownloadProgress();
+            var result = await Task.Run(() => BaseImport.ImportZip(path, state, body, work, Log, progress));
+            // 全まとめなら、取り込んだ中の zip を記録しておく（ギガファイル便から同じものを取り直さない）
+            foreach (string key in result.PartKeys) state.BaseParts.Add(key);
+            state.Save(ImageStatePath);
+            Log($"取り込みました: {Path.GetFileName(path)}（{result.Summary}）");
+        }
+        Log("「同期」でゲームに反映されます");
     }
 
     private static bool SamePath(string a, string b) =>
@@ -415,6 +509,8 @@ class MainForm : Form
         // 初めての同期の前なら、ゲーム側にある画像を先に取り込んでおく（手元にあるものは Dropbox から落とさずに済む）
         string? firstTarget = FirstSyncTarget();
         if (firstTarget != null && !await AdoptGameOnly(firstTarget, ask: false)) return;
+        // 画像がほとんど無ければ全まとめ（ギガファイル便）を先に取り込む。あれば新しい全まとめが出たことだけ知らせる
+        await BaseAuto();
         string used = await ImageFetcher.Run(ResourcesSource, ImageStatePath, WorkDir, _settings.ImageAutoFromWiki, _settings.ImageUrl,
             AskExclude, Log, DownloadProgress());
         // 自動のときは Wiki で見つけたリンクを覚えておき、次に Wiki が読めなくても使えるようにする

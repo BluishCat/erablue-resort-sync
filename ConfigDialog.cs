@@ -110,6 +110,10 @@ class UpdaterConfig
 /// </summary>
 class ConfigDialog : Form
 {
+    /// <summary>保存して閉じたあとにメイン画面で行うこと</summary>
+    public enum ExtraAction { None, BaseDownload, ImportZip }
+    public ExtraAction Action { get; private set; } = ExtraAction.None;
+
     private readonly string _configPath;
     private readonly string _appDir;
     private readonly string _targetRoot;
@@ -151,7 +155,7 @@ class ConfigDialog : Form
         Result = settings.Clone();
 
         Text = "詳細設定";
-        Size = new Size(760, 860);
+        Size = new Size(760, 960);
         MinimumSize = new Size(600, 700);
         StartPosition = FormStartPosition.CenterParent;
         ShowInTaskbar = false;
@@ -183,16 +187,28 @@ class ConfigDialog : Form
         AddDirRow(dirs, "作業フォルダ", _workDirBox, "ダウンロードしたファイルを一時的に置く場所を選んでください");
         AddRow(layout, dirs, 2);
         AddRow(layout, Note("空欄なら既定の場所。相対パスはアプリのフォルダ基準。作業フォルダには数百 MB の zip を一時的に置き、終わったら消します。\n"
-            + "保存先を変えたときは、今の中身を新しい場所へ移すか確認します。", 720), 2);
+            + "保存先を変えたときは、今の中身を新しい場所へ移すか確認します。", 690), 2);
 
         AddRow(layout, _hardLinkCheck, 2);
         AddRow(layout, Note("オンにすると、ゲーム側の resources の画像をコピーではなく、こちらの画像と同じ実体（ハードリンク）にします。"
             + "同じ画像を二重に持たなくなり（今はおよそ 2 GB 以上）、同期も速くなります。オンにしたとき、今ある画像もまとめてつなぎ直します。\n"
-            + "本体と指定先が同じドライブ（NTFS）のときだけ使えます。ゲーム側の画像を直接編集すると、こちらの画像も同じく変わります（ERB 等はつなぎません）。", 720), 2);
+            + "本体と指定先が同じドライブ（NTFS）のときだけ使えます。ゲーム側の画像を直接編集すると、こちらの画像も同じく変わります（ERB 等はつなぎません）。", 690), 2);
+
+        AddRow(layout, new Label { Text = "画像の全まとめ", AutoSize = true, Font = new Font(Control.DefaultFont, FontStyle.Bold), Margin = new Padding(3, 10, 3, 3) }, 2);
+        AddRow(layout, Note("Wiki の「顔グラ画像まとめ」（ギガファイル便）にある全画像のまとめです。追加画像がほとんど無いときは「追加画像を取得」で自動で取り込みます。"
+            + "毎回 Dropbox から取り込んでいれば普段は不要ですが、抜けている画像があるときはここから取り込めます（手元の方が新しい画像は上書きしません）。", 690), 2);
+        var baseButtons = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, Margin = Padding.Empty };
+        var baseDownload = new Button { Text = "全まとめを取り込む（ギガファイル便からダウンロード）", AutoSize = true };
+        var importZip = new Button { Text = "手元の zip を取り込む...", AutoSize = true };
+        // 保存できたら閉じてメイン画面で行う（入力に問題があって保存できなければ何もしない）
+        baseDownload.Click += (_, _) => { Action = ExtraAction.BaseDownload; SaveAndClose(); if (DialogResult != DialogResult.OK) Action = ExtraAction.None; };
+        importZip.Click += (_, _) => { Action = ExtraAction.ImportZip; SaveAndClose(); if (DialogResult != DialogResult.OK) Action = ExtraAction.None; };
+        baseButtons.Controls.AddRange([baseDownload, importZip]);
+        AddRow(layout, baseButtons, 2);
 
         AddRow(layout, _appUpdateCheck, 2);
         AddRow(layout, Note("オンにすると、起動したときに GitHub でこのアプリの新しい版を確かめ、あれば更新内容を見せて更新するか聞きます。"
-            + "オフでも、画面下の「アプリの更新を確認」からいつでも確かめられます。", 720), 2);
+            + "オフでも、画面下の「アプリの更新を確認」からいつでも確かめられます。", 690), 2);
 
         AddRow(layout, new Label { Text = "本体の取得元（SourceUrl）", AutoSize = true, Font = new Font(Control.DefaultFont, FontStyle.Bold), Margin = new Padding(3, 10, 3, 3) }, 2);
         AddRow(layout, _urlBox, 2);
@@ -281,7 +297,7 @@ class ConfigDialog : Form
         panel.Controls.Add(new Label { Text = "取り込まない追加画像", AutoSize = true, Font = new Font(Control.DefaultFont, FontStyle.Bold) });
         panel.Controls.Add(Note("ここにある「版」（同じ名前・同じサイズ）は、まとめ等に入っていても取り込みません。"
             + "同じ名前でも中身の違う版（後で正式に入った画像など）は普通に取り込みます。\n"
-            + "取り込んだ画像を手で消すと、次の取得のときに登録するか確認します。", 720));
+            + "取り込んだ画像を手で消すと、次の取得のときに登録するか確認します。", 690));
         panel.Controls.Add(_excludedList);
         var buttons = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill };
         var add = new Button { Text = "画像を選んで取り込まないようにする（手元からも削除）...", AutoSize = true };

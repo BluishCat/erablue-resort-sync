@@ -8,6 +8,8 @@ namespace erablue_resort同期アプリ;
 ///   名前|サイズ                      … 取り込み済みの Dropbox の zip
 ///   F|相対パス|サイズ|zip名           … zip から展開したファイル（手元で消されたかを見分けるため）
 ///   X|相対パス|サイズ|zip名           … 取り込まない画像の「版」
+///   G|中のzip名|サイズ|CRC            … 取り込み済みの全まとめ（ギガファイル便）の中の zip
+///   N|ファイルID                      … 「新しい全まとめがあります」と知らせ済みのアップロード
 /// 取り込まないのは「その名前でそのサイズのもの」だけ。後から同じ名前で中身の違う版
 /// （正式な画像など）が来たら普通に取り込む
 /// </summary>
@@ -20,6 +22,9 @@ class ImageState
     // 相対パス（/ 区切り・小文字比較）→ (サイズ, 由来の zip)
     public Dictionary<string, (long Size, string Zip)> Files { get; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, (long Size, string Zip)> Excluded { get; } = new(StringComparer.OrdinalIgnoreCase);
+    // 取り込み済みの全まとめの中の zip（名前|サイズ|CRC）
+    public HashSet<string> BaseParts { get; } = new(StringComparer.Ordinal);
+    public string BaseNotified { get; set; } = "";
 
     private ImageState(string resourcesDir) => ResourcesDir = Path.GetFullPath(resourcesDir);
 
@@ -47,7 +52,15 @@ class ImageState
         {
             if (line.Length == 0 || line.StartsWith('#')) continue;
             var p = line.Split('|');
-            if (p.Length == 4 && (p[0] == "F" || p[0] == "X") && long.TryParse(p[2], out long size))
+            if (p.Length == 4 && p[0] == "G")
+            {
+                s.BaseParts.Add(line[2..]);
+            }
+            else if (p.Length == 2 && p[0] == "N")
+            {
+                s.BaseNotified = p[1];
+            }
+            else if (p.Length == 4 && (p[0] == "F" || p[0] == "X") && long.TryParse(p[2], out long size))
             {
                 if (p[0] == "F") s.Files[p[1]] = (size, p[3]);
                 else s.Excluded[VersionKey(p[1], size)] = (size, p[3]);
@@ -65,6 +78,8 @@ class ImageState
         var sb = new StringBuilder();
         sb.Append(Header).Append(ResourcesDir).Append("\r\n");
         foreach (var z in Zips) sb.Append(z).Append("\r\n");
+        foreach (var g in BaseParts.Order(StringComparer.Ordinal)) sb.Append("G|").Append(g).Append("\r\n");
+        if (BaseNotified.Length > 0) sb.Append("N|").Append(BaseNotified).Append("\r\n");
         foreach (var (rel, v) in Excluded.OrderBy(kv => kv.Key)) sb.Append("X|").Append(rel[..rel.LastIndexOf('|')]).Append('|').Append(v.Size).Append('|').Append(v.Zip).Append("\r\n");
         foreach (var (rel, v) in Files.OrderBy(kv => kv.Key)) sb.Append("F|").Append(rel).Append('|').Append(v.Size).Append('|').Append(v.Zip).Append("\r\n");
         File.WriteAllText(statePath, sb.ToString(), new UTF8Encoding(false));
@@ -122,6 +137,8 @@ class ImageState
         foreach (var z in s.Zips) moved.Zips.Add(z);
         foreach (var kv in s.Files) moved.Files[kv.Key] = kv.Value;
         foreach (var kv in s.Excluded) moved.Excluded[kv.Key] = kv.Value;
+        foreach (var g in s.BaseParts) moved.BaseParts.Add(g);
+        moved.BaseNotified = s.BaseNotified;
         moved.Save(statePath);
     }
 
