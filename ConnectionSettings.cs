@@ -30,6 +30,8 @@ class ConnectionSettings
     public bool LaunchAfterUpdate { get; set; } = false;
     // 前回取り込んだ本体のコミット。同じなら本体のダウンロードを省き、違えば変わったファイルだけ取る
     public string BodyCommit { get; set; } = "";
+    // 最後に同期を終えた指定先。今の指定先と違えば「初めての同期」として、ゲーム側にだけある resources を先に取り込む
+    public string SyncedTargetDir { get; set; } = "";
 
     public static string DefaultBodyPath(string appDir) => Path.Combine(appDir, "erablue_resort");
     public static string DefaultResourcesPath(string appDir) => Path.Combine(appDir, "resources");
@@ -68,6 +70,7 @@ class ConnectionSettings
             case "GameExe": GameExe = value; break;
             case "LaunchAfterUpdate": LaunchAfterUpdate = value.Equals("true", StringComparison.OrdinalIgnoreCase); break;
             case "BodyCommit": BodyCommit = value; break;
+            case "SyncedTargetDir": SyncedTargetDir = value; break;
         }
     }
 
@@ -77,7 +80,7 @@ class ConnectionSettings
         var c = UpdaterConfig.Load(configPath);
         c.SourceUrl = BodyUrl;
         var mine = new HashSet<string> { "TargetDir", "ImageUrl", "ImageAutoFromWiki", "BodyDir", "ResourcesDir", "WorkDir",
-            "HardLinkResources", "GameExe", "LaunchAfterUpdate", "BodyCommit" };
+            "HardLinkResources", "GameExe", "LaunchAfterUpdate", "BodyCommit", "SyncedTargetDir" };
         c.Extras = c.Extras.Where(kv => !mine.Contains(kv.Key)).ToList();
         c.Extras.InsertRange(0,
         [
@@ -91,6 +94,7 @@ class ConnectionSettings
             new("GameExe", GameExe),
             new("LaunchAfterUpdate", LaunchAfterUpdate ? "true" : "false"),
             new("BodyCommit", BodyCommit),
+            new("SyncedTargetDir", SyncedTargetDir),
         ]);
         c.Save(configPath);
     }

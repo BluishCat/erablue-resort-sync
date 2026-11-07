@@ -68,6 +68,55 @@ static class FolderSync
     }
 
     /// <summary>
+    /// 指定先の resources にだけあるファイル（本体にも追加画像の保存先にも無いもの）。指定先からの相対パス。
+    /// 本体の resources は上書き対象なので配布元で消されても残る。ここに出るのは、ゲーム側に直接置かれたものか、
+    /// 追加画像の保存先から手で消されたもの
+    /// </summary>
+    public static List<string> FindGameOnlyResources(string sourceRoot, string resourcesSource, string targetRoot, List<string> protectedPaths)
+    {
+        string targetResources = Path.Combine(targetRoot, "resources");
+        if (!Directory.Exists(targetResources) || !Directory.Exists(sourceRoot)) return [];
+        var desired = Desired(sourceRoot, resourcesSource, protectedPaths);
+        return Directory.EnumerateFiles(targetResources, "*", SearchOption.AllDirectories)
+            .Where(path => !path.EndsWith(PathUtil.TempSuffix, StringComparison.Ordinal))
+            .Select(path => Path.GetRelativePath(targetRoot, path))
+            .Where(relPath => !desired.ContainsKey(relPath) && !PathUtil.IsUnderAny(relPath, protectedPaths))
+            .ToList();
+    }
+
+    /// <summary>
+    /// 指定先の resources にだけあるファイルを、追加画像の保存先へ取り込む（指定先のファイルはそのまま）。
+    /// hardLink なら同じ実体にして容量を増やさない（できなければコピー）
+    /// </summary>
+    public static (int Adopted, List<string> Errors) AdoptGameOnly(IEnumerable<string> relPaths, string targetRoot, string resourcesSource, bool hardLink)
+    {
+        int adopted = 0;
+        var errors = new List<string>();
+        bool linkOk = hardLink;
+        foreach (string relPath in relPaths)
+        {
+            try
+            {
+                string source = Path.Combine(targetRoot, relPath);
+                string dest = Path.Combine(resourcesSource, relPath["resources".Length..].TrimStart(Path.DirectorySeparatorChar));
+                if (File.Exists(dest)) continue;
+                Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
+                if (!(linkOk && PathUtil.TryHardLink(source, dest)))
+                {
+                    linkOk = false;
+                    PathUtil.CopyReplace(source, dest);
+                }
+                adopted++;
+            }
+            catch (Exception ex)
+            {
+                errors.Add($"{relPath}: {ex.Message}");
+            }
+        }
+        return (adopted, errors);
+    }
+
+    /// <summary>
     /// 指定先を「本体＋同フォルダのresources」と一致させるための操作を求める。
     /// protectedPaths の配下はコピーも削除もしない。
     /// </summary>
