@@ -400,6 +400,9 @@ class MainForm : Form
     private async Task FetchImages()
     {
         if (!CheckSettings()) return;
+        // 初めての同期の前なら、ゲーム側にある画像を先に取り込んでおく（手元にあるものは Dropbox から落とさずに済む）
+        string? firstTarget = FirstSyncTarget();
+        if (firstTarget != null && !await AdoptGameOnly(firstTarget, ask: false)) return;
         string used = await ImageFetcher.Run(ResourcesSource, ImageStatePath, WorkDir, _settings.ImageAutoFromWiki, _settings.ImageUrl,
             AskExclude, Log, DownloadProgress());
         // 自動のときは Wiki で見つけたリンクを覚えておき、次に Wiki が読めなくても使えるようにする
@@ -476,6 +479,9 @@ class MainForm : Form
         }
         Directory.CreateDirectory(ResourcesSource);
 
+        // ゲーム側の resources にだけあるものは、消す前に取り込むか決める（初めての同期なら聞かずに取り込む）
+        if (!await AdoptGameOnly(targetRoot, ask: !IsFirstSync(targetRoot))) return false;
+
         List<string> protectedPaths = FolderSync.LoadNoActionPaths(ConfigPath);
         Log("差分を確認中...");
         var plan = await Task.Run(() => FolderSync.CreatePlan(SourceRoot, ResourcesSource, targetRoot, protectedPaths));
@@ -496,6 +502,7 @@ class MainForm : Form
         if (total == 0)
         {
             Log("指定先は最新です");
+            MarkSynced(targetRoot);
             return true;
         }
         if (!await WaitGameClosed(targetRoot)) return false;
@@ -517,6 +524,7 @@ class MainForm : Form
         bool hardLink = _settings.HardLinkResources;
         string trashRoot = TrashRoot;
         var result = await Task.Run(() => FolderSync.Execute(plan, targetRoot, hardLink, trashRoot, progress, Log));
+        MarkSynced(targetRoot);
         // 同期で exe が入った・名前が変わったときに、起動するゲームの一覧を今の指定先に合わせる
         RefreshGameList();
 
@@ -533,6 +541,89 @@ class MainForm : Form
             + string.Join("\n", result.Errors.Take(8)) + (result.Errors.Count > 8 ? "\n…" : "")
             + "\n\nファイルが使用中のことが多いです。開いているものを閉じて、もう一度「同期」を押してください。",
             "同期の一部が終わりませんでした", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        return false;
+    }
+
+    // この指定先へ同期を終えたことがあるか（無ければ初めての同期として扱う）
+    private bool IsFirstSync(string targetRoot) =>
+        _settings.SyncedTargetDir.Length == 0 || !SamePath(_settings.SyncedTargetDir, targetRoot);
+
+    private void MarkSynced(string targetRoot)
+    {
+        if (!IsFirstSync(targetRoot)) return;
+        _settings.SyncedTargetDir = targetRoot;
+        _settings.Save(ConfigPath);
+    }
+
+    // 指定先が使える状態で、まだ同期を終えていなければその場所。ダイアログは出さない
+    private string? FirstSyncTarget()
+    {
+        try
+        {
+            string target = _targetBox.Text.Trim();
+            if (target.Length == 0) return null;
+            target = Path.GetFullPath(target);
+            return ValidateTarget(target) == null && IsFirstSync(target) ? target : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    // 指定先の resources の中の相対パス → 取り込み記録の書き方（resources からの相対・/ 区切り）
+    private static string StateRel(string targetRel) =>
+        targetRel["resources".Length..].TrimStart(Path.DirectorySeparatorChar).Replace(Path.DirectorySeparatorChar, '/');
+
+    /// <summary>
+    /// ゲーム側の resources にだけあるファイル（本体にも追加画像の保存先にも無いもの）を、追加画像の保存先へ取り込む。
+    /// ask なら取り込むか消すかを聞く。同期をやめるときは false
+    /// </summary>
+    private async Task<bool> AdoptGameOnly(string targetRoot, bool ask)
+    {
+        var protectedPaths = FolderSync.LoadNoActionPaths(ConfigPath);
+        var found = await Task.Run(() => FolderSync.FindGameOnlyResources(SourceRoot, ResourcesSource, targetRoot, protectedPaths));
+        if (found.Count == 0) return true;
+        // 「取り込まない」と決めた版は、聞かずに同期で消す
+        var state = ImageState.Load(ImageStatePath, ResourcesSource);
+        var candidates = found.Where(rel => !state.IsExcluded(StateRel(rel), new FileInfo(Path.Combine(targetRoot, rel)).Length)).ToList();
+        if (candidates.Count == 0) return true;
+
+        if (ask)
+        {
+            string sample = string.Join("\n", candidates.Take(10).Select(r => "・" + r)) + (candidates.Count > 10 ? $"\n…ほか {candidates.Count - 10} 件" : "");
+            var answer = MessageBox.Show(this,
+                $"ゲーム側の resources にだけあるファイルが {candidates.Count} 件あります（本体にも追加画像の保存先にも無いもの）。\n\n{sample}\n\n"
+                + "アプリ側（追加画像の保存先）に取り込んで残しますか？\n\n"
+                + "はい：取り込んで残す\nいいえ：同期で消す（退避フォルダへ移します）\nキャンセル：同期をやめる",
+                "ゲーム側にだけあるファイル", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question);
+            if (answer == DialogResult.Cancel)
+            {
+                Log("同期をやめました");
+                return false;
+            }
+            if (answer == DialogResult.No)
+            {
+                Log($"ゲーム側にだけある {candidates.Count} 件は取り込まず、同期で消します（退避します）");
+                return true;
+            }
+        }
+        else
+        {
+            Log($"この指定先への初めての同期なので、ゲーム側の resources にだけある {candidates.Count:#,0} 件を先に追加画像の保存先へ取り込みます");
+        }
+
+        Directory.CreateDirectory(ResourcesSource);
+        bool hardLink = _settings.HardLinkResources;
+        string resources = ResourcesSource;
+        var (adopted, errors) = await Task.Run(() => FolderSync.AdoptGameOnly(candidates, targetRoot, resources, hardLink));
+        Log($"ゲーム側にだけあった {adopted:#,0} 件を追加画像の保存先に取り込みました");
+        if (errors.Count == 0) return true;
+
+        // 取り込めなかったものを同期で消してしまわないよう、ここで止める
+        Log($"取り込めなかったもの {errors.Count} 件:\r\n" + string.Join("\r\n", errors.Take(30).Select(e => "  " + e)));
+        MessageBox.Show(this, $"ゲーム側にだけあるファイルのうち {errors.Count} 件を取り込めなかったため、同期をやめました。\n詳しくはログを見てください。",
+            "取り込めませんでした", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         return false;
     }
 
