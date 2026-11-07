@@ -32,6 +32,10 @@ class ConnectionSettings
     public string BodyCommit { get; set; } = "";
     // 最後に同期を終えた指定先。今の指定先と違えば「初めての同期」として、ゲーム側にだけある resources を先に取り込む
     public string SyncedTargetDir { get; set; } = "";
+    // 起動時にアプリの新しい版を確かめる
+    public bool AppUpdateCheck { get; set; } = true;
+    // 「この版は飛ばす」を選んだ版（起動時の確認では知らせない）
+    public string SkipAppVersion { get; set; } = "";
 
     public static string DefaultBodyPath(string appDir) => Path.Combine(appDir, "erablue_resort");
     public static string DefaultResourcesPath(string appDir) => Path.Combine(appDir, "resources");
@@ -71,6 +75,8 @@ class ConnectionSettings
             case "LaunchAfterUpdate": LaunchAfterUpdate = value.Equals("true", StringComparison.OrdinalIgnoreCase); break;
             case "BodyCommit": BodyCommit = value; break;
             case "SyncedTargetDir": SyncedTargetDir = value; break;
+            case "AppUpdateCheck": AppUpdateCheck = !value.Equals("false", StringComparison.OrdinalIgnoreCase); break;
+            case "SkipAppVersion": SkipAppVersion = value; break;
         }
     }
 
@@ -80,7 +86,7 @@ class ConnectionSettings
         var c = UpdaterConfig.Load(configPath);
         c.SourceUrl = BodyUrl;
         var mine = new HashSet<string> { "TargetDir", "ImageUrl", "ImageAutoFromWiki", "BodyDir", "ResourcesDir", "WorkDir",
-            "HardLinkResources", "GameExe", "LaunchAfterUpdate", "BodyCommit", "SyncedTargetDir" };
+            "HardLinkResources", "GameExe", "LaunchAfterUpdate", "BodyCommit", "SyncedTargetDir", "AppUpdateCheck", "SkipAppVersion" };
         c.Extras = c.Extras.Where(kv => !mine.Contains(kv.Key)).ToList();
         c.Extras.InsertRange(0,
         [
@@ -95,6 +101,8 @@ class ConnectionSettings
             new("LaunchAfterUpdate", LaunchAfterUpdate ? "true" : "false"),
             new("BodyCommit", BodyCommit),
             new("SyncedTargetDir", SyncedTargetDir),
+            new("AppUpdateCheck", AppUpdateCheck ? "true" : "false"),
+            new("SkipAppVersion", SkipAppVersion),
         ]);
         c.Save(configPath);
     }

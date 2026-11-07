@@ -119,6 +119,7 @@ class ConfigDialog : Form
     private readonly TextBox _resDirBox = new() { Dock = DockStyle.Fill };
     private readonly TextBox _workDirBox = new() { Dock = DockStyle.Fill };
     private readonly CheckBox _hardLinkCheck = new() { Text = "画像（resources）をハードリンクで同期する", AutoSize = true };
+    private readonly CheckBox _appUpdateCheck = new() { Text = "起動時にアプリの新しい版を確認する", AutoSize = true, Margin = new Padding(3, 10, 3, 3) };
 
     /// <summary>保存後の設定（取得元・保存先を反映済み）</summary>
     public ConnectionSettings Result { get; private set; }
@@ -161,6 +162,7 @@ class ConfigDialog : Form
         _resDirBox.Text = settings.ResourcesDir;
         _workDirBox.Text = settings.WorkDir;
         _hardLinkCheck.Checked = settings.HardLinkResources;
+        _appUpdateCheck.Checked = settings.AppUpdateCheck;
         _bodyDirBox.PlaceholderText = "既定: " + ConnectionSettings.DefaultBodyPath(appDir);
         _resDirBox.PlaceholderText = "既定: " + ConnectionSettings.DefaultResourcesPath(appDir);
         _workDirBox.PlaceholderText = "既定: " + ConnectionSettings.DefaultWorkPath(appDir);
@@ -187,6 +189,10 @@ class ConfigDialog : Form
         AddRow(layout, Note("オンにすると、ゲーム側の resources の画像をコピーではなく、こちらの画像と同じ実体（ハードリンク）にします。"
             + "同じ画像を二重に持たなくなり（今はおよそ 2 GB 以上）、同期も速くなります。オンにしたとき、今ある画像もまとめてつなぎ直します。\n"
             + "本体と指定先が同じドライブ（NTFS）のときだけ使えます。ゲーム側の画像を直接編集すると、こちらの画像も同じく変わります（ERB 等はつなぎません）。", 720), 2);
+
+        AddRow(layout, _appUpdateCheck, 2);
+        AddRow(layout, Note("オンにすると、起動したときに GitHub でこのアプリの新しい版を確かめ、あれば更新内容を見せて更新するか聞きます。"
+            + "オフでも、画面下の「アプリの更新を確認」からいつでも確かめられます。", 720), 2);
 
         AddRow(layout, new Label { Text = "本体の取得元（SourceUrl）", AutoSize = true, Font = new Font(Control.DefaultFont, FontStyle.Bold), Margin = new Padding(3, 10, 3, 3) }, 2);
         AddRow(layout, _urlBox, 2);
@@ -226,6 +232,7 @@ class ConfigDialog : Form
         {
             _urlBox.Text = ConnectionSettings.DefaultBodyUrl;
             _bodyDirBox.Text = _resDirBox.Text = _workDirBox.Text = "";
+            _appUpdateCheck.Checked = true;
             SetLines(_overwriteBox, UpdaterConfig.DefaultOverwrite);
             SetLines(_noActionBox, UpdaterConfig.DefaultNoAction);
         };
@@ -362,6 +369,7 @@ class ConfigDialog : Form
         s.ResourcesDir = _resDirBox.Text.Trim();
         s.WorkDir = _workDirBox.Text.Trim();
         s.HardLinkResources = _hardLinkCheck.Checked;
+        s.AppUpdateCheck = _appUpdateCheck.Checked;
         return s;
     }
 
