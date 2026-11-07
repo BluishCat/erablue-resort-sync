@@ -13,7 +13,7 @@ namespace erablue_resort同期アプリ;
 /// </summary>
 static class ImageFetcher
 {
-    private const string WikiRawUrl = "https://raw.githubusercontent.com/wiki/erablue-resort/erablue_resort/Home.md";
+    public const string WikiRawUrl = "https://raw.githubusercontent.com/wiki/erablue-resort/erablue_resort/Home.md";
 
     static ImageFetcher()
     {
@@ -53,6 +53,35 @@ static class ImageFetcher
         if (found == null) log("設定の追加画像リンクを使用します");
         Directory.CreateDirectory(workDir);
 
+        // Wiki のリンクが新しい「○○以降更新分」に切り替わったときは、前のフォルダの取り残しを先に取り込む
+        // （しばらく起動していなかった間に前のフォルダに上がった分を落とさないため）
+        if (found != null && FolderKey(manualUrl) is string oldKey && oldKey != FolderKey(found))
+        {
+            log("追加画像のフォルダが切り替わったので、前のフォルダの取り残しを先に確かめます");
+            try
+            {
+                await ApplyFolder(manualUrl, state, statePath, workDir, log, progress, allowWhole: false);
+            }
+            catch (Exception ex)
+            {
+                log("前のフォルダは確かめられませんでした（消されている可能性があります）: " + ex.Message);
+            }
+        }
+        await ApplyFolder(sharedUrl, state, statePath, workDir, log, progress, allowWhole: true);
+        return sharedUrl;
+    }
+
+    // 共有フォルダのリンクの識別子（/scl/fo/〇〇/ の部分）。Dropbox のフォルダでなければ null
+    private static string? FolderKey(string url)
+    {
+        var m = Regex.Match(url ?? "", @"dropbox\.com/scl/fo/([^/?#]+)");
+        return m.Success ? m.Groups[1].Value : null;
+    }
+
+    // 1つの共有フォルダから、まだ取り込んでいない zip を取り込む（一覧が取れなければ、allowWhole ならフォルダ丸ごと）
+    private static async Task ApplyFolder(string sharedUrl, ImageState state, string statePath, string workDir, Action<string> log,
+        IProgress<(long done, long total)> progress, bool allowWhole)
+    {
         List<RemoteFile>? files = null;
         try
         {
@@ -66,6 +95,11 @@ static class ImageFetcher
         if (files != null && await ApplyFromList(files, state, statePath, workDir, log, progress))
         {
             // 差分だけ取り込み済み
+        }
+        else if (files == null && !allowWhole)
+        {
+            // 前のフォルダは消されていることが多いので、丸ごとのダウンロードは試さない
+            log("前のフォルダは確かめられませんでした（消されている可能性があります）");
         }
         else
         {
@@ -81,7 +115,6 @@ static class ImageFetcher
                 File.Delete(zipPath);
             }
         }
-        return sharedUrl;
     }
 
     // PreviewUrl は zip の中身一覧（ファイル名とサイズ）を返す。ダウンロードせずに中身を確かめるのに使う
@@ -330,7 +363,7 @@ static class ImageFetcher
     // 1つの zip の中でも UTF-8 と Shift_JIS の名前が混ざっていることがあるので、
     // Latin1 で生のバイト列のまま読み、エントリごとに判定して復号する
     private static readonly Encoding StrictUtf8 = new UTF8Encoding(false, throwOnInvalidBytes: true);
-    private static string DecodeName(string rawName)
+    internal static string DecodeName(string rawName)
     {
         if (rawName.Any(c => c > 0xFF)) return rawName; // 既に正しく復号されている
         byte[] bytes = Encoding.Latin1.GetBytes(rawName);
@@ -340,7 +373,7 @@ static class ImageFetcher
 
     // 「10月13日以降顔グラ画像まとめ/キャラ/画像」のような包みフォルダは剥がす。
     // キャラフォルダ直下には画像があるので、全ファイルが2階層以上かどうかで見分ける
-    private static bool ShouldStrip(List<string> fileNames)
+    internal static bool ShouldStrip(List<string> fileNames)
     {
         var tops = fileNames.Select(n => n.Split('/')[0]).Distinct().ToList();
         return tops.Count == 1 && fileNames.All(n => n.Count(c => c == '/') >= 2)
@@ -348,7 +381,7 @@ static class ImageFetcher
     }
 
     // zip 内の名前 → 展開先のフルパス（resources の外に出るものは null）
-    private static string? DestPath(string root, string name, bool strip)
+    internal static string? DestPath(string root, string name, bool strip)
     {
         var parts = name.Split('/').Skip(strip ? 1 : 0).Where(p => p is not ("" or "." or "..")).ToArray();
         if (parts.Length == 0) return null;
@@ -356,7 +389,7 @@ static class ImageFetcher
         return dest.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) ? dest : null;
     }
 
-    private static string RelOf(string root, string dest) => Path.GetRelativePath(root, dest).Replace('\\', '/');
+    internal static string RelOf(string root, string dest) => Path.GetRelativePath(root, dest).Replace('\\', '/');
 
     // 展開した数と、取り込まない画像として飛ばした数を返す
     private static (int Extracted, int Excluded) ExtractInto(ZipArchive zip, ImageState state, string zipName)
