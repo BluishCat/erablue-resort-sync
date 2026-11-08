@@ -63,9 +63,9 @@ exe と同じフォルダに、必要になった時点で次のファイルと�
 
 ### 同期しないフォルダ（既定）
 
-`sav`、`emuera.config`、`CSV_EDITFILE`、`CSV/ローカル追加用CSV`、`ERB_EDITFILE`、`ERB/ローカル改造用ERB`
+`sav`、`emuera.config`、`macro.txt`、`CSV_EDITFILE`、`CSV/ローカル追加用CSV`、`ERB_EDITFILE`、`ERB/ローカル改造用ERB`
 
-「詳細設定」で追加・削除できます。
+「詳細設定」で追加・削除できます。`macro.txt`（Emuera のキーマクロ）は、一覧から外しても常に保護します。
 
 ## 旧「erablue_resort更新アプリ」から移行する
 

@@ -16,6 +16,10 @@ static class FolderSync
     // 退避したファイルを何回分残すか
     public const int TrashGenerations = 10;
 
+    // 設定に関係なく、同期でコピーも削除もしないもの。
+    // macro.txt は Emuera がゲームのフォルダ直下に保存するキーマクロ（本体に同じ名前が入っても上書きしない）
+    public static readonly string[] AlwaysProtected = ["macro.txt"];
+
     /// <summary>
     /// 更新アプリの config.txt から NoActionFolders を読む（同期でも触らない場所として共有する）
     /// </summary>
@@ -39,6 +43,8 @@ static class FolderSync
                 noActionPaths.Add(trimmedLine.Replace('/', Path.DirectorySeparatorChar).TrimEnd(Path.DirectorySeparatorChar));
             }
         }
+        foreach (string path in AlwaysProtected)
+            if (!noActionPaths.Contains(path, StringComparer.OrdinalIgnoreCase)) noActionPaths.Add(path);
         return noActionPaths;
     }
 
