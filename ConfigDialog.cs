@@ -11,7 +11,7 @@ namespace erablue_resort同期アプリ;
 class UpdaterConfig
 {
     public static readonly string[] DefaultOverwrite = ["resources"];
-    public static readonly string[] DefaultNoAction = ["sav", "emuera.config", "CSV_EDITFILE", "CSV/ローカル追加用CSV", "ERB_EDITFILE", "ERB/ローカル改造用ERB"];
+    public static readonly string[] DefaultNoAction = ["sav", "emuera.config", "macro.txt", "CSV_EDITFILE", "CSV/ローカル追加用CSV", "ERB_EDITFILE", "ERB/ローカル改造用ERB"];
 
     public string SourceUrl { get; set; } = ConnectionSettings.DefaultBodyUrl;
     public List<string> OverwriteFolders { get; set; } = [.. DefaultOverwrite];
