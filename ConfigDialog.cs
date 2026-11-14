@@ -111,7 +111,7 @@ class UpdaterConfig
 class ConfigDialog : Form
 {
     /// <summary>保存して閉じたあとにメイン画面で行うこと</summary>
-    public enum ExtraAction { None, BaseDownload, ImportZip }
+    public enum ExtraAction { None, BaseDownload, ImportZip, FolderCheck }
     public ExtraAction Action { get; private set; } = ExtraAction.None;
 
     private readonly string _configPath;
@@ -155,7 +155,7 @@ class ConfigDialog : Form
         Result = settings.Clone();
 
         Text = "詳細設定";
-        Size = new Size(760, 960);
+        Size = new Size(760, 1000);
         MinimumSize = new Size(600, 700);
         StartPosition = FormStartPosition.CenterParent;
         ShowInTaskbar = false;
@@ -205,6 +205,16 @@ class ConfigDialog : Form
         importZip.Click += (_, _) => { Action = ExtraAction.ImportZip; SaveAndClose(); if (DialogResult != DialogResult.OK) Action = ExtraAction.None; };
         baseButtons.Controls.AddRange([baseDownload, importZip]);
         AddRow(layout, baseButtons, 2);
+
+        AddRow(layout, new Label { Text = "画像フォルダ名のチェック", AutoSize = true, Font = new Font(Control.DefaultFont, FontStyle.Bold), Margin = new Padding(3, 10, 3, 3) }, 2);
+        var folderCheck = new Button { Text = "画像フォルダ名をチェック...", AutoSize = true };
+        folderCheck.Click += (_, _) => { Action = ExtraAction.FolderCheck; SaveAndClose(); if (DialogResult != DialogResult.OK) Action = ExtraAction.None; };
+        var folderRow = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, WrapContents = false, Margin = Padding.Empty };
+        folderRow.Controls.Add(folderCheck);
+        // キャラが消えたり改名されたりすると、同じ番号の古いフォルダが残る（ゲーム内で混ざることはない）
+        folderRow.Controls.Add(Note("キャラ CSV に無い名前の画像フォルダ（消えた・改名されたキャラの古いもの）を、セーブや ERB で使われているかで分けて一覧にします。"
+            + "退避するのは中身が全部ほかのフォルダにもあるものだけで、実行前に確認します。", 520));
+        AddRow(layout, folderRow, 2);
 
         AddRow(layout, _appUpdateCheck, 2);
         AddRow(layout, Note("オンにすると、起動したときに GitHub でこのアプリの新しい版を確かめ、あれば更新内容を見せて更新するか聞きます。"
