@@ -291,6 +291,66 @@ class MainForm : Form
 
         if (dialog.Action == ConfigDialog.ExtraAction.BaseDownload) await RunWithLock("全まとめの取り込み", BaseManual);
         else if (dialog.Action == ConfigDialog.ExtraAction.ImportZip) await RunWithLock("zip の取り込み", ImportLocalZip);
+        else if (dialog.Action == ConfigDialog.ExtraAction.FolderCheck) await RunWithLock("画像フォルダ名のチェック", CheckFolders);
+    }
+
+    /// <summary>
+    /// 詳細設定の「画像フォルダ名をチェック」。結果は作業フォルダに書き出し、
+    /// 中身が全部ほかのフォルダにもあるものだけ、確認してから追加画像の保存先から退避する
+    /// </summary>
+    private async Task CheckFolders()
+    {
+        if (!Directory.Exists(Path.Combine(SourceRoot, "CSV")))
+        {
+            MessageBox.Show(this, $"本体の保存先に本体がありません。先に「本体を更新」を実行してください。\n{SourceRoot}", "画像フォルダ名のチェック", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+        // セーブが使っているフォルダを見分けるため、指定先が使えるなら sav も見る
+        string? target = null;
+        try
+        {
+            string t = _targetBox.Text.Trim();
+            if (t.Length > 0 && ValidateTarget(Path.GetFullPath(t)) == null) target = Path.GetFullPath(t);
+        }
+        catch
+        {
+            // 指定先が不正ならセーブは見ない
+        }
+        if (target == null) Log("指定先が使えないため、セーブで使われているかは調べません");
+
+        string body = SourceRoot, resources = ResourcesSource;
+        Log("画像フォルダ名をチェックしています（画像が多いと 1 分ほどかかることがあります）...");
+        var report = await Task.Run(() => FolderCheck.Run(body, resources, target, Log));
+        string text = FolderCheck.Format(report);
+        Directory.CreateDirectory(WorkDir);
+        string reportPath = Path.Combine(WorkDir, "画像フォルダ名チェック.txt");
+        File.WriteAllText(reportPath, $"{DateTime.Now:yyyy/MM/dd HH:mm} 画像フォルダ名のチェック\r\n" + text, new UTF8Encoding(false));
+        Log(text.TrimEnd() + "\r\n結果: " + reportPath);
+
+        var movable = report.Movable.ToList();
+        if (movable.Count == 0)
+        {
+            MessageBox.Show(this, $"退避してよいフォルダはありませんでした（CSV に無い名前のフォルダ {report.Items.Count} 個は、どれも残します）。\n\n結果: {reportPath}",
+                "画像フォルダ名のチェック", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+        string evacuate = Path.Combine(WorkDir, "退避_画像フォルダ名チェック", DateTime.Now.ToString("yyyyMMdd_HHmmss"));
+        string list = string.Join("\n", movable.Take(15).Select(i => $"・{i.Name}（{i.Files} 件） {i.Detail}")) + (movable.Count > 15 ? $"\n…ほか {movable.Count - 15} 個" : "");
+        var answer = MessageBox.Show(this,
+            $"中身が全部ほかのフォルダにもある古いフォルダが {movable.Count} 個あります。\n\n{list}\n\n"
+            + $"追加画像の保存先から次の場所へ退避しますか？\n{evacuate}\n\n"
+            + "中の画像は「取り込まない追加画像」に登録するので、取り直されません。ゲーム側からは次の「同期」で消えます（同期の退避先へ）。\n"
+            + $"セーブやERBで使われているフォルダ、判断できないフォルダ（{report.Items.Count - movable.Count} 個）は動かしません。",
+            "画像フォルダ名のチェック", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+        if (answer != DialogResult.Yes)
+        {
+            Log("退避はしませんでした");
+            return;
+        }
+        var state = ImageState.Load(ImageStatePath, resources);
+        var (folders, files) = await Task.Run(() => FolderCheck.Move(movable, resources, evacuate, state, Log));
+        state.Save(ImageStatePath);
+        Log($"{folders} 個のフォルダ（{files} 件）を退避し、取り込まない版に登録しました。「同期」でゲーム側にも反映されます");
     }
 
     /// <summary>
