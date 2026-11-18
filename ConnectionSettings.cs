@@ -36,6 +36,12 @@ class ConnectionSettings
     public bool AppUpdateCheck { get; set; } = true;
     // 「この版は飛ばす」を選んだ版（起動時の確認では知らせない）
     public string SkipAppVersion { get; set; } = "";
+    // 同期で消さない、ゲーム側にだけあるファイル（指定先からの相対パス）。同期のときに確認して登録する
+    public List<string> KeepGameFiles { get; set; } = [];
+    // 公式に同じパスのファイルがあっても、ゲーム側の版を残す（上書きしない）もの
+    public List<string> KeepOverOfficial { get; set; } = [];
+
+    public GameKeep Keep => new([.. KeepGameFiles], [.. KeepOverOfficial]);
 
     public static string DefaultBodyPath(string appDir) => Path.Combine(appDir, "erablue_resort");
     public static string DefaultResourcesPath(string appDir) => Path.Combine(appDir, "resources");
@@ -49,7 +55,23 @@ class ConnectionSettings
     private static string Resolve(string value, string appDir, string fallback) =>
         Path.GetFullPath(string.IsNullOrWhiteSpace(value) ? fallback : Path.Combine(appDir, Environment.ExpandEnvironmentVariables(value.Trim())));
 
-    public ConnectionSettings Clone() => (ConnectionSettings)MemberwiseClone();
+    public ConnectionSettings Clone()
+    {
+        var c = (ConnectionSettings)MemberwiseClone();
+        c.KeepGameFiles = [.. KeepGameFiles];
+        c.KeepOverOfficial = [.. KeepOverOfficial];
+        return c;
+    }
+
+    // config.txt では「/」区切り、アプリの中では Windows の区切りで持つ
+    private static string FromConfigPath(string value) => value.Trim().Replace('/', Path.DirectorySeparatorChar).Trim(Path.DirectorySeparatorChar);
+    private static string ToConfigPath(string relPath) => relPath.Replace(Path.DirectorySeparatorChar, '/');
+
+    private static void AddPath(List<string> list, string value)
+    {
+        string p = FromConfigPath(value);
+        if (p.Length > 0 && !list.Contains(p, StringComparer.OrdinalIgnoreCase)) list.Add(p);
+    }
 
     public static ConnectionSettings Load(string configPath)
     {
@@ -77,6 +99,8 @@ class ConnectionSettings
             case "SyncedTargetDir": SyncedTargetDir = value; break;
             case "AppUpdateCheck": AppUpdateCheck = !value.Equals("false", StringComparison.OrdinalIgnoreCase); break;
             case "SkipAppVersion": SkipAppVersion = value; break;
+            case "KeepGameFile": AddPath(KeepGameFiles, value); break;
+            case "KeepOverOfficial": AddPath(KeepOverOfficial, value); break;
         }
     }
 
@@ -86,7 +110,8 @@ class ConnectionSettings
         var c = UpdaterConfig.Load(configPath);
         c.SourceUrl = BodyUrl;
         var mine = new HashSet<string> { "TargetDir", "ImageUrl", "ImageAutoFromWiki", "BodyDir", "ResourcesDir", "WorkDir",
-            "HardLinkResources", "GameExe", "LaunchAfterUpdate", "BodyCommit", "SyncedTargetDir", "AppUpdateCheck", "SkipAppVersion" };
+            "HardLinkResources", "GameExe", "LaunchAfterUpdate", "BodyCommit", "SyncedTargetDir", "AppUpdateCheck", "SkipAppVersion",
+            "KeepGameFile", "KeepOverOfficial" };
         c.Extras = c.Extras.Where(kv => !mine.Contains(kv.Key)).ToList();
         c.Extras.InsertRange(0,
         [
@@ -103,6 +128,8 @@ class ConnectionSettings
             new("SyncedTargetDir", SyncedTargetDir),
             new("AppUpdateCheck", AppUpdateCheck ? "true" : "false"),
             new("SkipAppVersion", SkipAppVersion),
+            .. KeepGameFiles.Select(p => new KeyValuePair<string, string>("KeepGameFile", ToConfigPath(p))),
+            .. KeepOverOfficial.Select(p => new KeyValuePair<string, string>("KeepOverOfficial", ToConfigPath(p))),
         ]);
         c.Save(configPath);
     }
