@@ -83,6 +83,11 @@ class UpdaterConfig
         ("GameExe", "まとめて更新の後に起動するゲーム（指定先からの相対パス）と、起動するか"),
         ("LaunchAfterUpdate", null),
         ("BodyCommit", "前回取り込んだ本体の版（自動で書き換わります。空にすると次回は丸ごと取り直します）"),
+        ("SyncedTargetDir", null),
+        ("AppUpdateCheck", null),
+        ("SkipAppVersion", null),
+        ("KeepGameFile", "同期で消さない、ゲーム側にだけあるファイル（同期のときに確認して登録。KeepOverOfficial は公式に同じ名前があってもゲーム側の版を残すもの）"),
+        ("KeepOverOfficial", null),
     ];
 
     /// <summary>入力行を整えて重複を除く。使えない行があれば理由を返す</summary>
@@ -138,6 +143,10 @@ class ConfigDialog : Form
     private readonly List<(string Full, string Rel, long Size, string Zip)> _toExclude = [];
     private readonly List<string> _toUnexclude = [];
 
+    // ゲーム側に残すファイル（保存を押したときに反映する）。(相対パス, 公式版より優先か)
+    private readonly ListBox _keepList = new() { Dock = DockStyle.Fill, SelectionMode = SelectionMode.MultiExtended, IntegralHeight = false, HorizontalScrollbar = true };
+    private readonly List<(string Rel, bool Over)> _keep = [];
+
     public string SourceUrl => _urlBox.Text.Trim();
 
     // フォルダ選択で相対パスを求める基準（本体の保存先・指定先）
@@ -153,6 +162,8 @@ class ConfigDialog : Form
         _targetRoot = targetRoot;
         _original = settings.Clone();
         Result = settings.Clone();
+        _keep.AddRange(settings.KeepGameFiles.Select(p => (p, false)));
+        _keep.AddRange(settings.KeepOverOfficial.Select(p => (p, true)));
 
         Text = "詳細設定";
         Size = new Size(760, 1000);
@@ -229,16 +240,16 @@ class ConfigDialog : Form
             "更新で新しいファイルは入るが、配布元に無いファイルは消さない場所。自分で足した画像を置く resources など", _overwriteBox, false), 0, listRow);
         layout.Controls.Add(Section("保護対象（NoActionFolders）",
             "更新でも同期でも一切触らない場所。セーブ（sav）や自分で改造したファイルなど", _noActionBox, true), 1, listRow);
-        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 60));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
         layout.RowCount++;
 
         int exRow = layout.RowCount;
-        var exPanel = ExcludedSection();
-        layout.Controls.Add(exPanel, 0, exRow);
-        layout.SetColumnSpan(exPanel, 2);
-        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 40));
+        layout.Controls.Add(ExcludedSection(), 0, exRow);
+        layout.Controls.Add(KeepSection(), 1, exRow);
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
         layout.RowCount++;
         RefreshExcludedList();
+        RefreshKeepList();
 
         var bottom = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, FlowDirection = FlowDirection.RightToLeft };
         var ok = new Button { Text = "保存", AutoSize = true, DialogResult = DialogResult.None };
@@ -305,13 +316,12 @@ class ConfigDialog : Form
     {
         var panel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, Margin = new Padding(3, 10, 3, 3) };
         panel.Controls.Add(new Label { Text = "取り込まない追加画像", AutoSize = true, Font = new Font(Control.DefaultFont, FontStyle.Bold) });
-        panel.Controls.Add(Note("ここにある「版」（同じ名前・同じサイズ）は、まとめ等に入っていても取り込みません。"
-            + "同じ名前でも中身の違う版（後で正式に入った画像など）は普通に取り込みます。\n"
-            + "取り込んだ画像を手で消すと、次の取得のときに登録するか確認します。", 690));
+        panel.Controls.Add(Note("ここにある版（同じ名前・同じサイズ）は取り込みません（中身の違う版は取り込みます）。"
+            + "取り込んだ画像を手で消すと、次の取得で登録するか確認します。"));
         panel.Controls.Add(_excludedList);
         var buttons = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill };
-        var add = new Button { Text = "画像を選んで取り込まないようにする（手元からも削除）...", AutoSize = true };
-        var remove = new Button { Text = "選んだものを解除（次の取得で取り直す）", AutoSize = true };
+        var add = new Button { Text = "画像を選んで登録（手元からも削除）...", AutoSize = true };
+        var remove = new Button { Text = "選んだものを解除", AutoSize = true };
         add.Click += (_, _) => PickExcluded();
         remove.Click += (_, _) =>
         {
@@ -333,6 +343,74 @@ class ConfigDialog : Form
         panel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         return panel;
+    }
+
+    private Control KeepSection()
+    {
+        var panel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, Margin = new Padding(3, 10, 3, 3) };
+        panel.Controls.Add(new Label { Text = "ゲーム側に残すファイル", AutoSize = true, Font = new Font(Control.DefaultFont, FontStyle.Bold) });
+        panel.Controls.Add(Note("同期で消さない、ゲーム側にだけあるファイル（自分で入れた BGM など）。"
+            + "同期のときに確認して登録します。解除すると次の同期でまた確認します。"));
+        panel.Controls.Add(_keepList);
+        var buttons = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill };
+        var add = new Button { Text = "ファイルを選んで登録...", AutoSize = true };
+        var remove = new Button { Text = "選んだものを解除", AutoSize = true };
+        add.Click += (_, _) => PickKeep();
+        remove.Click += (_, _) =>
+        {
+            foreach (int i in _keepList.SelectedIndices.Cast<int>().OrderByDescending(i => i)) _keep.RemoveAt(i);
+            RefreshKeepList();
+        };
+        buttons.Controls.Add(add);
+        buttons.Controls.Add(remove);
+        panel.Controls.Add(buttons);
+        panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        panel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        return panel;
+    }
+
+    private void RefreshKeepList()
+    {
+        _keep.Sort((a, b) => StringComparer.OrdinalIgnoreCase.Compare(a.Rel, b.Rel));
+        _keepList.BeginUpdate();
+        _keepList.Items.Clear();
+        foreach (var (rel, over) in _keep) _keepList.Items.Add(over ? $"{rel}（公式版より優先）" : rel);
+        _keepList.EndUpdate();
+    }
+
+    // 指定先のファイルを選んで登録する。本体にも同じパスがあるものは「公式版より優先」になる
+    private void PickKeep()
+    {
+        if (string.IsNullOrWhiteSpace(_targetRoot) || !Directory.Exists(_targetRoot))
+        {
+            MessageBox.Show(this, "先にメイン画面で指定先（ゲームの erablue_resort フォルダ）を指定してください。", "登録できません", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+        string target = Path.GetFullPath(_targetRoot);
+        using var d = new OpenFileDialog { Title = "同期で消さないファイルを選んでください（複数可）", InitialDirectory = target, Multiselect = true };
+        if (d.ShowDialog(this) != DialogResult.OK) return;
+        var config = UpdaterConfig.Load(_configPath);
+        var protectedPaths = config.NoActionFolders.Concat(FolderSync.AlwaysProtected).Select(p => p.Replace('/', Path.DirectorySeparatorChar)).ToList();
+        var refused = new List<string>();
+        foreach (string file in d.FileNames)
+        {
+            string full = Path.GetFullPath(file);
+            string rel = Path.GetRelativePath(target, full);
+            string? reason = rel.StartsWith("..") || Path.IsPathRooted(rel) ? "指定先の外"
+                : Path.GetDirectoryName(rel) is not { Length: > 0 } ? "直下のファイルは元から消しません"
+                : FolderSync.IsLinkable(rel) ? "resources は追加画像として取り込まれます"
+                : PathUtil.IsUnderAny(rel, protectedPaths) ? "保護対象に入っています"
+                : null;
+            if (reason != null) { refused.Add($"{Path.GetFileName(full)}（{reason}）"); continue; }
+            bool over = File.Exists(Path.Combine(Draft().BodyPath(_appDir), rel));
+            _keep.RemoveAll(k => k.Rel.Equals(rel, StringComparison.OrdinalIgnoreCase));
+            _keep.Add((rel, over));
+        }
+        if (refused.Count > 0)
+            MessageBox.Show(this, "次のファイルは登録しませんでした:\n" + string.Join("\n", refused.Take(10)), "登録できません", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        RefreshKeepList();
     }
 
     private void RefreshExcludedList()
@@ -396,6 +474,8 @@ class ConfigDialog : Form
         s.WorkDir = _workDirBox.Text.Trim();
         s.HardLinkResources = _hardLinkCheck.Checked;
         s.AppUpdateCheck = _appUpdateCheck.Checked;
+        s.KeepGameFiles = _keep.Where(k => !k.Over).Select(k => k.Rel).ToList();
+        s.KeepOverOfficial = _keep.Where(k => k.Over).Select(k => k.Rel).ToList();
         return s;
     }
 

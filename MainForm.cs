@@ -9,6 +9,8 @@ class MainForm : Form
     private static readonly string ConfigPath = Path.Combine(AppDirectory, "config.txt");
     // 取り込み済みの追加画像 zip の記録
     private static readonly string ImageStatePath = Path.Combine(AppDirectory, "同期アプリ_取込済み画像.txt");
+    // 前回の同期で本体からゲームへ配ったファイルの一覧（ゲーム側にだけあるファイルが、公式が消したものか自分で置いたものかを見分ける）
+    private static readonly string DistributedPath = Path.Combine(AppDirectory, "同期アプリ_配布済み一覧.txt");
     private const string DistributionUrl = "https://github.com/erablue-resort/erablue_resort/wiki";
     // ログファイルがこれより大きくなったら .old に回す
     private const long MaxLogBytes = 2_000_000;
@@ -554,6 +556,15 @@ class MainForm : Form
     private async Task UpdateBody()
     {
         if (!CheckSettings()) return;
+        // 一覧がまだ無ければ（この機能が入る前の版から更新したとき）、更新前の本体＝前回ゲームへ配ったものとして作っておく
+        if (!File.Exists(DistributedPath) && Directory.Exists(SourceRoot) && _settings.SyncedTargetDir.Length > 0)
+        {
+            var protectedPaths = FolderSync.LoadNoActionPaths(ConfigPath);
+            string source = SourceRoot;
+            var list = await Task.Run(() => DistributedList.FromBody(source, protectedPaths));
+            DistributedList.Save(DistributedPath, list);
+            Log($"前回ゲームへ配ったファイルの一覧を、更新前の本体から作りました（{list.Count:#,0} 件）");
+        }
         string? commit = await BodyUpdater.Run(SourceRoot, ConfigPath, _settings.BodyUrl, _settings.BodyCommit, WorkDir, Log, DownloadProgress());
         if ((commit ?? "") != _settings.BodyCommit)
         {
@@ -652,7 +663,14 @@ class MainForm : Form
 
         List<string> protectedPaths = FolderSync.LoadNoActionPaths(ConfigPath);
         Log("差分を確認中...");
-        var plan = await Task.Run(() => FolderSync.CreatePlan(SourceRoot, ResourcesSource, targetRoot, protectedPaths));
+        string sourceRoot = SourceRoot, resourcesSource = ResourcesSource;
+        var keep = _settings.Keep;
+        // 一覧が無ければ今の本体から作る（その場合、今回の更新で公式が消したファイルも「ゲーム側にだけある」として聞かれる）
+        var distributedBefore = DistributedList.Load(DistributedPath)
+            ?? await Task.Run(() => DistributedList.FromBody(sourceRoot, protectedPaths));
+        var firstPlan = await Task.Run(() => FolderSync.CreatePlan(sourceRoot, resourcesSource, targetRoot, protectedPaths, keep, distributedBefore));
+        var plan = await DecideGameFiles(firstPlan, targetRoot, protectedPaths);
+        if (plan == null) return false;
 
         // 画像を大量に取り込んだ直後などはコピーが数万件になるので、ログには先頭だけ出す
         const int MaxCopyLines = 300;
@@ -670,6 +688,7 @@ class MainForm : Form
         if (total == 0)
         {
             Log("指定先は最新です");
+            SaveDistributed(plan, targetRoot, distributedBefore);
             MarkSynced(targetRoot);
             return true;
         }
@@ -692,6 +711,7 @@ class MainForm : Form
         bool hardLink = _settings.HardLinkResources;
         string trashRoot = TrashRoot;
         var result = await Task.Run(() => FolderSync.Execute(plan, targetRoot, hardLink, trashRoot, progress, Log));
+        SaveDistributed(plan, targetRoot, distributedBefore);
         MarkSynced(targetRoot);
         // 同期で exe が入った・名前が変わったときに、起動するゲームの一覧を今の指定先に合わせる
         RefreshGameList();
@@ -710,6 +730,101 @@ class MainForm : Form
             + "\n\nファイルが使用中のことが多いです。開いているものを閉じて、もう一度「同期」を押してください。",
             "同期の一部が終わりませんでした", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         return false;
+    }
+
+    /// <summary>
+    /// ゲーム側にだけあるファイルと「残す」登録の扱いを決め、計画に反映する。同期をやめるときは null。
+    /// ・前回配ったものでも登録でもないファイル → 残すものを選んでもらい、残すものは登録する
+    /// ・登録したファイルと同じパスに公式のファイルが入った → 公式版にするか、ゲーム側の版を残すか聞く
+    /// </summary>
+    private async Task<SyncPlan?> DecideGameFiles(SyncPlan plan, string targetRoot, List<string> protectedPaths)
+    {
+        bool changed = false;
+        if (plan.NowOfficial.Count > 0)
+        {
+            _settings.KeepGameFiles.RemoveAll(p => plan.NowOfficial.Contains(p, StringComparer.OrdinalIgnoreCase));
+            Log($"「残す」に登録したファイルのうち {plan.NowOfficial.Count} 件は、公式に同じ中身のファイルが入ったので登録を外しました");
+            changed = true;
+        }
+        // 別の指定先へ初めて同期するときは、前の指定先の登録を消さない
+        if (plan.MissingKept.Count > 0 && !IsFirstSync(targetRoot))
+        {
+            _settings.KeepGameFiles.RemoveAll(p => plan.MissingKept.Contains(p, StringComparer.OrdinalIgnoreCase));
+            _settings.KeepOverOfficial.RemoveAll(p => plan.MissingKept.Contains(p, StringComparer.OrdinalIgnoreCase));
+            Log($"「残す」に登録したファイルのうち {plan.MissingKept.Count} 件はゲーム側に無くなっていたので、登録を外しました:\r\n"
+                + string.Join("\r\n", plan.MissingKept.Take(30).Select(p => "  " + p)));
+            changed = true;
+        }
+
+        var useOfficial = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (plan.Conflicts.Count > 0)
+        {
+            var names = plan.Conflicts.Select(c => c.RelPath).ToList();
+            string sample = string.Join("\n", names.Take(10).Select(r => "・" + r)) + (names.Count > 10 ? $"\n…ほか {names.Count - 10} 件" : "");
+            var answer = MessageBox.Show(this,
+                $"「残す」に登録したゲーム側のファイルと同じ名前で、公式のファイルが {names.Count} 件入りました（中身は違います）。\n\n{sample}\n\n"
+                + "どちらを使いますか？\n\n"
+                + "はい：公式版にする（ゲーム側の版は退避フォルダへ写してから上書き）\n"
+                + "いいえ：ゲーム側の版を残す（これからも公式版で上書きしません。詳細設定で解除できます）\n"
+                + "キャンセル：同期をやめる",
+                "公式と同じ名前のファイル", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question);
+            if (answer == DialogResult.Cancel)
+            {
+                if (changed) _settings.Save(ConfigPath);
+                Log("同期をやめました");
+                return null;
+            }
+            _settings.KeepGameFiles.RemoveAll(p => names.Contains(p, StringComparer.OrdinalIgnoreCase));
+            if (answer == DialogResult.Yes)
+            {
+                useOfficial.UnionWith(names);
+                Log($"公式と同じ名前になった {names.Count} 件は公式版にします（ゲーム側の版は退避します）");
+            }
+            else
+            {
+                _settings.KeepOverOfficial.AddRange(names.Where(n => !_settings.KeepOverOfficial.Contains(n, StringComparer.OrdinalIgnoreCase)));
+                Log($"公式と同じ名前になった {names.Count} 件は、ゲーム側の版を残します（公式版より優先）");
+            }
+            changed = true;
+        }
+
+        var keepUnknown = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (plan.UnknownFiles.Count > 0)
+        {
+            using var dialog = new GameOnlyDialog(plan.UnknownFiles, targetRoot, defaultKeep: !IsFirstSync(targetRoot));
+            if (dialog.ShowDialog(this) != DialogResult.OK)
+            {
+                if (changed) _settings.Save(ConfigPath);
+                Log("同期をやめました");
+                return null;
+            }
+            keepUnknown = dialog.Kept;
+            _settings.KeepGameFiles.AddRange(keepUnknown.Order(StringComparer.OrdinalIgnoreCase).Where(p => !_settings.KeepGameFiles.Contains(p, StringComparer.OrdinalIgnoreCase)));
+            int trash = plan.UnknownFiles.Count - keepUnknown.Count;
+            Log($"ゲーム側にだけあるファイル {plan.UnknownFiles.Count} 件のうち、{keepUnknown.Count} 件を「残す」に登録しました"
+                + (trash > 0 ? $"（{trash} 件は同期で退避します）" : "")
+                + (keepUnknown.Count > 0 ? ":\r\n" + string.Join("\r\n", keepUnknown.Order(StringComparer.OrdinalIgnoreCase).Take(30).Select(p => "  " + p)) : ""));
+            changed = true;
+        }
+
+        if (changed) _settings.Save(ConfigPath);
+        if (plan.UnknownFiles.Count == 0 && plan.Conflicts.Count == 0) return plan;
+        return await Task.Run(() => FolderSync.Resolve(plan, targetRoot, protectedPaths, keepUnknown, useOfficial));
+    }
+
+    // 今回配ったファイルを覚えておく。前回配ったもので消せずにゲーム側に残っているもの（使用中だった等）も、次に消せるよう残す
+    private void SaveDistributed(SyncPlan plan, string targetRoot, HashSet<string> before)
+    {
+        try
+        {
+            var list = new HashSet<string>(plan.Distributed, StringComparer.OrdinalIgnoreCase);
+            list.UnionWith(before.Where(p => !plan.KeptFiles.Contains(p) && File.Exists(Path.Combine(targetRoot, p))));
+            DistributedList.Save(DistributedPath, list);
+        }
+        catch (Exception ex)
+        {
+            Log("前回配ったファイルの一覧を保存できませんでした: " + ex.Message);
+        }
     }
 
     /// <summary>

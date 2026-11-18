@@ -6,7 +6,24 @@ namespace erablue_resort同期アプリ;
 /// 同期で行う操作の一覧（相対パスは指定先からの相対）。
 /// Touched は中身が同じで日時だけ違ったため、日時だけ揃えたファイルの数（次回からは比べずに済む）
 /// </summary>
-record SyncPlan(List<(string SourcePath, string RelPath)> Copies, List<string> DeleteFiles, List<string> DeleteDirs, int Touched);
+record SyncPlan(List<(string SourcePath, string RelPath)> Copies, List<string> DeleteFiles, List<string> DeleteDirs, int Touched)
+{
+    // ゲーム側にだけあり、前回配ったものでも残す登録でもないファイル（自分で置いたものと思われるので、消す前に聞く）
+    public List<string> UnknownFiles { get; init; } = [];
+    // 残す登録のファイルと同じパスに、公式が中身の違うファイルを入れたもの（どちらにするか聞く）
+    public List<(string SourcePath, string RelPath)> Conflicts { get; init; } = [];
+    // 残す登録のうち、公式に同じ中身のファイルが入ったもの（登録を外してよい）
+    public List<string> NowOfficial { get; init; } = [];
+    // 残す登録のうち、ゲーム側から無くなっていたもの（登録を外してよい）
+    public List<string> MissingKept { get; init; } = [];
+    // 同期後に「前回配ったファイル」として覚えておくもの
+    public HashSet<string> Distributed { get; init; } = new(StringComparer.OrdinalIgnoreCase);
+    // 上書きする前に退避しておくゲーム側のファイル（食い違いで公式版を選んだもの）
+    public List<string> BackupBeforeCopy { get; init; } = [];
+    // フォルダ削除を計算し直すための材料
+    public HashSet<string> DesiredDirs { get; init; } = new(StringComparer.OrdinalIgnoreCase);
+    public HashSet<string> KeptFiles { get; init; } = new(StringComparer.OrdinalIgnoreCase);
+}
 
 /// <summary>同期の結果。Errors が空でなければ一部が終わっていない</summary>
 record SyncResult(int Copied, int Linked, int Trashed, int DirsDeleted, List<string> Errors, string? TrashDir);
@@ -124,10 +141,16 @@ static class FolderSync
 
     /// <summary>
     /// 指定先を「本体＋同フォルダのresources」と一致させるための操作を求める。
-    /// protectedPaths の配下はコピーも削除もしない。
+    /// protectedPaths の配下はコピーも削除もしない。keep に登録したゲーム側のファイルは消さない。
+    /// distributedBefore（前回配ったファイル）を渡すと、ゲーム側にだけあって一覧に無いファイルは消さずに UnknownFiles に入れる
+    /// （Resolve で残すか消すかを決める）。null なら従来どおり全部消す対象にする
     /// </summary>
-    public static SyncPlan CreatePlan(string sourceRoot, string resourcesSource, string targetRoot, List<string> protectedPaths)
+    public static SyncPlan CreatePlan(string sourceRoot, string resourcesSource, string targetRoot, List<string> protectedPaths,
+        GameKeep? keep = null, HashSet<string>? distributedBefore = null)
     {
+        keep ??= GameKeep.Empty;
+        var keepFiles = new HashSet<string>(keep.Files, StringComparer.OrdinalIgnoreCase);
+        var keepOver = new HashSet<string>(keep.OverOfficial, StringComparer.OrdinalIgnoreCase);
         var desired = Desired(sourceRoot, resourcesSource, protectedPaths);
 
         var desiredDirs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -138,31 +161,96 @@ static class FolderSync
                 desiredDirs.Add(dir);
             }
         }
+        var distributed = new HashSet<string>(desired.Keys.Where(k => DistributedList.IsTracked(k, protectedPaths)), StringComparer.OrdinalIgnoreCase);
 
         int touched = 0;
-        var copies = desired
-            .Where(kv => !IsSameFile(kv.Value, Path.Combine(targetRoot, kv.Key), ref touched))
-            .Select(kv => (kv.Value, kv.Key))
-            .ToList();
+        var copies = new List<(string SourcePath, string RelPath)>();
+        var conflicts = new List<(string SourcePath, string RelPath)>();
+        var nowOfficial = new List<string>();
+        foreach (var (relPath, sourcePath) in desired)
+        {
+            string destPath = Path.Combine(targetRoot, relPath);
+            bool exists = File.Exists(destPath);
+            // 公式版より優先すると決めたゲーム側の版は上書きしない
+            if (exists && keepOver.Contains(relPath)) continue;
+            bool same = IsSameFile(sourcePath, destPath, ref touched);
+            if (exists && keepFiles.Contains(relPath))
+            {
+                if (same) nowOfficial.Add(relPath);
+                else conflicts.Add((sourcePath, relPath));
+                continue;
+            }
+            if (!same) copies.Add((sourcePath, relPath));
+        }
+        var missingKept = keepFiles.Concat(keepOver).Where(rel => !File.Exists(Path.Combine(targetRoot, rel))).ToList();
 
         // 指定先が新規作成なら消すものはない
-        if (!Directory.Exists(targetRoot)) return new SyncPlan(copies, [], [], touched);
+        if (!Directory.Exists(targetRoot))
+            return new SyncPlan(copies, [], [], touched) { Conflicts = conflicts, NowOfficial = nowOfficial, MissingKept = missingKept, Distributed = distributed, DesiredDirs = desiredDirs };
 
         // 指定先の直下にあるファイルはユーザーが置いたものなので、同期元になくても残す
-        var deleteFiles = Directory.EnumerateFiles(targetRoot, "*", SearchOption.AllDirectories)
-            .Select(path => Path.GetRelativePath(targetRoot, path))
-            .Where(relPath => Path.GetDirectoryName(relPath) != "")
-            .Where(relPath => !desired.ContainsKey(relPath) && !PathUtil.IsUnderAny(relPath, protectedPaths))
-            .ToList();
+        var deleteFiles = new List<string>();
+        var unknown = new List<string>();
+        var kept = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (string path in Directory.EnumerateFiles(targetRoot, "*", SearchOption.AllDirectories))
+        {
+            string relPath = Path.GetRelativePath(targetRoot, path);
+            if (Path.GetDirectoryName(relPath) == "" || desired.ContainsKey(relPath) || PathUtil.IsUnderAny(relPath, protectedPaths)) continue;
+            if (keepFiles.Contains(relPath) || keepOver.Contains(relPath)) kept.Add(relPath);
+            // 前回配ったもの（公式が消した・改名した古いもの）と resources は従来どおり消す
+            else if (distributedBefore == null || !DistributedList.IsTracked(relPath, protectedPaths) || distributedBefore.Contains(relPath)) deleteFiles.Add(relPath);
+            else unknown.Add(relPath);
+        }
 
-        // 深い順に並べて、子から消せるようにする
-        var deleteDirs = Directory.EnumerateDirectories(targetRoot, "*", SearchOption.AllDirectories)
+        var deleteDirs = DeleteDirs(targetRoot, desiredDirs, protectedPaths, kept.Concat(unknown));
+        return new SyncPlan(copies, deleteFiles, deleteDirs, touched)
+        {
+            UnknownFiles = unknown,
+            Conflicts = conflicts,
+            NowOfficial = nowOfficial,
+            MissingKept = missingKept,
+            Distributed = distributed,
+            DesiredDirs = desiredDirs,
+            KeptFiles = kept,
+        };
+    }
+
+    /// <summary>
+    /// 聞いた結果を計画に反映する。keepUnknown は残すと答えたもの（ほかの UnknownFiles は退避する）、
+    /// useOfficial は公式版にすると答えた食い違い（ゲーム側の版を退避してから上書き。ほかはゲーム側の版を残す）
+    /// </summary>
+    public static SyncPlan Resolve(SyncPlan plan, string targetRoot, List<string> protectedPaths, ISet<string> keepUnknown, ISet<string> useOfficial)
+    {
+        var official = plan.Conflicts.Where(c => useOfficial.Contains(c.RelPath)).ToList();
+        var kept = new HashSet<string>(plan.KeptFiles.Concat(plan.UnknownFiles.Where(keepUnknown.Contains)), StringComparer.OrdinalIgnoreCase);
+        return plan with
+        {
+            Copies = [.. plan.Copies, .. official],
+            DeleteFiles = [.. plan.DeleteFiles, .. plan.UnknownFiles.Where(rel => !keepUnknown.Contains(rel))],
+            DeleteDirs = Directory.Exists(targetRoot) ? DeleteDirs(targetRoot, plan.DesiredDirs, protectedPaths, kept) : [],
+            BackupBeforeCopy = [.. plan.BackupBeforeCopy, .. official.Select(c => c.RelPath)],
+            UnknownFiles = [],
+            Conflicts = [],
+            KeptFiles = kept,
+        };
+    }
+
+    // 指定先のフォルダのうち、同期後に要らなくなるもの。深い順に並べて、子から消せるようにする
+    private static List<string> DeleteDirs(string targetRoot, HashSet<string> desiredDirs, List<string> protectedPaths, IEnumerable<string> keptFiles)
+    {
+        var keepDirs = new HashSet<string>(desiredDirs, StringComparer.OrdinalIgnoreCase);
+        foreach (string relPath in keptFiles)
+        {
+            for (string? dir = Path.GetDirectoryName(relPath); !string.IsNullOrEmpty(dir); dir = Path.GetDirectoryName(dir))
+            {
+                keepDirs.Add(dir);
+            }
+        }
+        return Directory.EnumerateDirectories(targetRoot, "*", SearchOption.AllDirectories)
             .Select(path => Path.GetRelativePath(targetRoot, path))
-            .Where(relDir => !desiredDirs.Contains(relDir) && !PathUtil.IsUnderAny(relDir, protectedPaths) && !PathUtil.ContainsAny(relDir, protectedPaths))
+            .Where(relDir => !keepDirs.Contains(relDir) && !PathUtil.IsUnderAny(relDir, protectedPaths) && !PathUtil.ContainsAny(relDir, protectedPaths))
             .OrderByDescending(relDir => relDir.Length)
             .ToList();
-
-        return new SyncPlan(copies, deleteFiles, deleteDirs, touched);
     }
 
     /// <summary>
@@ -174,9 +262,33 @@ static class FolderSync
         var errors = new List<string>();
         int done = 0, copied = 0, linked = 0, trashed = 0, dirsDeleted = 0;
         bool linkOk = hardLink;
+        string? trashDir = plan.DeleteFiles.Count + plan.BackupBeforeCopy.Count > 0 ? Path.Combine(trashRoot, DateTime.Now.ToString("yyyyMMdd_HHmmss")) : null;
+
+        // 公式版で上書きするゲーム側のファイルは、先に退避フォルダへ写しておく（写せなければ上書きしない）
+        var backupFailed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (string relPath in plan.BackupBeforeCopy)
+        {
+            try
+            {
+                string to = Path.Combine(trashDir!, relPath);
+                Directory.CreateDirectory(Path.GetDirectoryName(to)!);
+                File.Copy(Path.Combine(targetRoot, relPath), to, overwrite: true);
+                trashed++;
+            }
+            catch (Exception ex)
+            {
+                backupFailed.Add(relPath);
+                errors.Add($"退避: {relPath}（{ex.Message}。上書きしませんでした）");
+            }
+        }
 
         foreach (var (sourcePath, relPath) in plan.Copies)
         {
+            if (backupFailed.Contains(relPath))
+            {
+                progress.Report(++done);
+                continue;
+            }
             try
             {
                 string destPath = Path.Combine(targetRoot, relPath);
@@ -205,7 +317,6 @@ static class FolderSync
             progress.Report(++done);
         }
 
-        string? trashDir = plan.DeleteFiles.Count > 0 ? Path.Combine(trashRoot, DateTime.Now.ToString("yyyyMMdd_HHmmss")) : null;
         foreach (string relPath in plan.DeleteFiles)
         {
             try
